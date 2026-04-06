@@ -14,6 +14,7 @@ import websockets
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -88,6 +89,32 @@ def find_assetto_base_path() -> Optional[Path]:
             return candidate
 
     return None
+
+
+def launch_assetto_corsa_game() -> tuple[bool, str]:
+    # Prioriza o caminho informado e tenta nomes comuns de executável.
+    preferred_base = Path("C:/Program Files (x86)/Steam/steamapps/common/assettocorsa")
+    base_candidates = [preferred_base]
+
+    discovered_base = find_assetto_base_path()
+    if discovered_base and discovered_base not in base_candidates:
+        base_candidates.append(discovered_base)
+
+    executable_names = ["acs.exe", "AssettoCorsa.exe"]
+
+    for base_path in base_candidates:
+        for executable_name in executable_names:
+            executable_path = base_path / executable_name
+            if not executable_path.is_file():
+                continue
+
+            try:
+                subprocess.Popen([str(executable_path)], cwd=str(base_path))
+                return True, f"Jogo iniciado: {executable_path}"
+            except Exception as exc:
+                return False, f"Falha ao iniciar o jogo em {executable_path}: {exc}"
+
+    return False, "Não foi encontrado acs.exe/AssettoCorsa.exe no diretório do Assetto Corsa."
 
 
 def list_assetto_dirs(base_path: Optional[Path], section: str) -> list[str]:
@@ -467,6 +494,11 @@ def ensure_user_profile_initialized():
         print(f"Configuração da corrida atualizada em: {updated_race_file}")
     else:
         print("Não foi possível localizar o arquivo race.ini em Documents\\Assetto Corsa\\cfg.")
+
+    started_game, game_message = launch_assetto_corsa_game()
+    print(game_message)
+    if not started_game:
+        print("Dica: verifique se o executável existe em C:/Program Files (x86)/Steam/steamapps/common/assettocorsa")
 
     USER_PROFILE_INITIALIZED = True
 
