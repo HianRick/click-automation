@@ -14,7 +14,10 @@ import websockets
 import json
 import os
 import re
+import sys
+import random
 import subprocess
+import threading
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -60,7 +63,37 @@ USER_PROFILE = {
     "skin": ""
 }
 USER_PROFILE_INITIALIZED = False
+PROFILE_GUI_STARTED = False
+PROFILE_UPDATE_LOCK = threading.Lock()
 RACE_INI_PATH = Path.home() / "Documents" / "Assetto Corsa" / "cfg" / "race.ini"
+AC_DRAG = 6
+TRACK_CONFIG_TO_DISPLAY = {
+    "drag500": "500 metros",
+    "drag1000": "1000 metros",
+    "drag2000": "2000 metros",
+}
+TRACK_DISPLAY_TO_CONFIG = {value: key for key, value in TRACK_CONFIG_TO_DISPLAY.items()}
+RACE_MONITOR_STATE = {
+    "game_started": False,
+    "restart_triggered": False,
+}
+ENABLE_AUTO_RESTART = os.getenv("ENABLE_AUTO_RESTART", "1").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_APP_RESTART = os.getenv("ENABLE_APP_RESTART", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_track_value(value: str) -> str:
+    normalized = (value or "").strip().lower().replace("m", "").replace("metros", "").strip()
+    if normalized in {"500", "1000", "2000"}:
+        return f"drag{normalized}"
+    if value in TRACK_DISPLAY_TO_CONFIG:
+        return TRACK_DISPLAY_TO_CONFIG[value]
+    if value in TRACK_CONFIG_TO_DISPLAY:
+        return value
+    return ""
+
+
+def to_track_display(track_config: str) -> str:
+    return TRACK_CONFIG_TO_DISPLAY.get(track_config, TRACK_CONFIG_TO_DISPLAY["drag2000"])
 
 
 def initialize_shared_memory():
@@ -193,7 +226,7 @@ def find_car_preview_image(base_path: Optional[Path], car_name: str, skin_name: 
     return None
 
 
-def collect_user_profile_gui() -> Optional[dict]:
+def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) -> Optional[dict]:
     try:
         import tkinter as tk
         from tkinter import messagebox
@@ -212,54 +245,113 @@ def collect_user_profile_gui() -> Optional[dict]:
     submitted = {"ok": False}
 
     assetto_base = find_assetto_base_path()
-    track_options = ["drag1000", "drag2000", "drag500"]
+    track_options = list(TRACK_DISPLAY_TO_CONFIG.keys())
     cars = list_assetto_dirs(assetto_base, "cars")
 
     root = tk.Tk()
     root.title("Identificação do Piloto")
-    root.geometry("760x620")
-    root.resizable(False, False)
+    
+    # Tela cheia (sem barras superior/inferior)
+    root.attributes('-fullscreen', True)
+        
+    root.bind("<Escape>", lambda e: root.attributes("-fullscreen", False))
 
-    container = tk.Frame(root, padx=20, pady=16)
+    # Estilo de Corrida (Dark Theme com tons chamativos)
+    BG_COLOR = "#121212"
+    FG_COLOR = "#FFFFFF"
+    ACCENT_COLOR = "#E53935"
+    INPUT_BG = "#2C2C2C"
+    
+    root.configure(bg=BG_COLOR)
+    
+    style = ttk.Style()
+    style.theme_use('clam')
+    style.configure(
+        "Race.TCombobox",
+        fieldbackground=INPUT_BG,
+        background=INPUT_BG,
+        foreground=FG_COLOR,
+        borderwidth=0,
+        arrowsize=16,
+    )
+    style.map(
+        "Race.TCombobox",
+        fieldbackground=[("readonly", INPUT_BG)],
+        foreground=[("readonly", FG_COLOR)],
+        selectbackground=[("readonly", INPUT_BG)],
+        selectforeground=[("readonly", FG_COLOR)],
+    )
+    style.configure("Vertical.TScrollbar", background=INPUT_BG, troughcolor=BG_COLOR)
+    root.option_add("*TCombobox*Listbox*Background", INPUT_BG)
+    root.option_add("*TCombobox*Listbox*Foreground", FG_COLOR)
+    root.option_add("*TCombobox*Listbox*selectBackground", "#3A3A3A")
+    root.option_add("*TCombobox*Listbox*selectForeground", FG_COLOR)
+
+    # Logo no topo
+    logo_path = Path("logo.png")
+    if logo_path.exists():
+        try:
+            logo_img = Image.open(logo_path)
+            # Redimensiona mantendo aspecto
+            logo_img.thumbnail((400, 150))
+            logo_tk = ImageTk.PhotoImage(logo_img)
+            logo_label = tk.Label(root, image=logo_tk, bg=BG_COLOR)
+            logo_label.image = logo_tk  # Previne GC
+            logo_label.pack(pady=(20, 10))
+        except Exception:
+            pass
+
+    container = tk.Frame(root, padx=20, pady=10, bg=BG_COLOR)
     container.pack(fill="both", expand=True)
 
-    tk.Label(container, text="Informe os dados antes de iniciar", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 12))
+    tk.Label(container, text="PREPARE-SE PARA A CORRIDA", font=("Impact", 18, "italic"), bg=BG_COLOR, fg=ACCENT_COLOR).pack(anchor="n", pady=(0, 20))
 
-    tk.Label(container, text="Nome").pack(anchor="w")
+    # Limitar largura dos formulários centralizados
+    form_center = tk.Frame(container, bg=BG_COLOR)
+    form_center.pack(anchor="n", pady=5)
+
+    # Estilo customizado para labels e entries
+    def ui_label(parent, text):
+        return tk.Label(parent, text=text, font=("Segoe UI", 10, "bold"), bg=BG_COLOR, fg=FG_COLOR)
+        
+    def ui_entry(parent, textvar):
+        return tk.Entry(parent, textvariable=textvar, font=("Segoe UI", 11), bg=INPUT_BG, fg=FG_COLOR, insertbackground=FG_COLOR, relief="flat", width=60)
+
+    ui_label(form_center, "NOME DO PILOTO").pack(anchor="w")
     name_var = tk.StringVar()
-    name_entry = tk.Entry(container, textvariable=name_var)
-    name_entry.pack(fill="x", pady=(2, 10))
+    name_entry = ui_entry(form_center, name_var)
+    name_entry.pack(fill="x", pady=(2, 12), ipady=4)
 
-    tk.Label(container, text="Telefone").pack(anchor="w")
+    ui_label(form_center, "TELEFONE").pack(anchor="w")
     phone_var = tk.StringVar()
-    phone_entry = tk.Entry(container, textvariable=phone_var)
-    phone_entry.pack(fill="x", pady=(2, 14))
+    phone_entry = ui_entry(form_center, phone_var)
+    phone_entry.pack(fill="x", pady=(2, 16), ipady=4)
 
-    tk.Label(container, text="Config Track").pack(anchor="w")
+    ui_label(form_center, "DISTÂNCIA DE DRAG").pack(anchor="w")
     track_var = tk.StringVar()
-    track_combo = ttk.Combobox(container, textvariable=track_var, state="readonly", values=track_options)
-    track_combo.pack(fill="x", pady=(2, 10))
-    track_combo.set(USER_PROFILE.get("track", "drag2000"))
+    track_combo = ttk.Combobox(form_center, textvariable=track_var, state="readonly", values=track_options, font=("Segoe UI", 11), style="Race.TCombobox")
+    track_combo.pack(fill="x", pady=(2, 12), ipady=4)
+    track_combo.set(to_track_display(USER_PROFILE.get("track", "drag2000")))
 
     car_var = tk.StringVar()
 
-    tk.Label(container, text="Carro").pack(anchor="w")
-    car_select_frame = tk.Frame(container)
-    car_select_frame.pack(fill="x", pady=(2, 10))
-    selected_car_label = tk.Label(car_select_frame, text="Nenhum carro selecionado", anchor="w")
+    ui_label(form_center, "MÁQUINA (CARRO)").pack(anchor="w")
+    car_select_frame = tk.Frame(form_center, bg=BG_COLOR)
+    car_select_frame.pack(fill="x", pady=(2, 12))
+    selected_car_label = tk.Label(car_select_frame, text="Nenhum carro selecionado", anchor="w", font=("Segoe UI", 11), bg=INPUT_BG, fg="#AAAAAA", padx=8, pady=4)
     selected_car_label.pack(side="left", fill="x", expand=True)
 
-    tk.Label(container, text="Variação (skin)").pack(anchor="w")
+    ui_label(form_center, "VARIAÇÃO (SKIN)").pack(anchor="w")
     skin_var = tk.StringVar()
-    skin_combo = ttk.Combobox(container, textvariable=skin_var, state="readonly", values=[])
-    skin_combo.pack(fill="x", pady=(2, 12))
+    skin_combo = ttk.Combobox(form_center, textvariable=skin_var, state="readonly", values=[], font=("Segoe UI", 11), style="Race.TCombobox")
+    skin_combo.pack(fill="x", pady=(2, 12), ipady=4)
 
-    footer_frame = tk.Frame(container)
-    footer_frame.pack(fill="x", side="bottom")
+    footer_frame = tk.Frame(form_center, bg=BG_COLOR)
+    footer_frame.pack(fill="x", pady=(10, 0))
 
-    image_frame = tk.LabelFrame(container, text="Preview do carro", padx=8, pady=8)
-    image_frame.pack(fill="both", expand=True, pady=(0, 12))
-    preview_label = tk.Label(image_frame, text="Selecione carro e skin para visualizar.")
+    image_frame = tk.LabelFrame(container, text="PREVIEW DA MÁQUINA", padx=8, pady=8, bg=BG_COLOR, fg=ACCENT_COLOR, font=("Segoe UI", 9, "bold"))
+    image_frame.pack(fill="both", expand=True, pady=(10, 0))
+    preview_label = tk.Label(image_frame, text="Selecione carro e skin para visualizar.", bg=BG_COLOR, fg="#666666")
     preview_label.pack(fill="both", expand=True)
 
     image_state = {"preview": None}
@@ -270,35 +362,44 @@ def collect_user_profile_gui() -> Optional[dict]:
         preview_path = find_car_preview_image(assetto_base, car_name, skin_name)
 
         if not preview_path:
-            preview_label.configure(text="Imagem preview não encontrada.", image="")
+            preview_label.configure(text="Imagem preview não encontrada.", image="", bg=BG_COLOR, fg="#666666")
             image_state["preview"] = None
             return
 
         try:
             image = Image.open(preview_path)
-            image.thumbnail((700, 280))
+            # Aumentado para preencher melhor a tela cheia
+            image.thumbnail((1200, 700))
             image_tk = ImageTk.PhotoImage(image)
-            preview_label.configure(image=image_tk, text="")
+            preview_label.configure(image=image_tk, text="", bg=BG_COLOR)
             image_state["preview"] = image_tk
         except Exception:
-            preview_label.configure(text=f"Falha ao carregar imagem: {preview_path}", image="")
+            preview_label.configure(text=f"Falha ao carregar imagem: {preview_path}", image="", bg=BG_COLOR, fg=ACCENT_COLOR)
             image_state["preview"] = None
 
     def open_car_selector():
         selector = tk.Toplevel(root)
-        selector.title("Selecionar carro")
-        selector.geometry("920x620")
+        selector.title("Garagem - Escolha seu Carro")
+        
+        # Tela cheia para o seletor também
+        try:
+            selector.state('zoomed')
+        except tk.TclError:
+            selector.attributes('-fullscreen', True)
+        selector.bind("<Escape>", lambda e: selector.destroy())
+
         selector.transient(root)
         selector.grab_set()
+        selector.configure(bg=BG_COLOR)
 
-        wrapper = tk.Frame(selector, padx=12, pady=12)
+        wrapper = tk.Frame(selector, padx=12, pady=12, bg=BG_COLOR)
         wrapper.pack(fill="both", expand=True)
 
-        tk.Label(wrapper, text="Escolha o carro pela imagem", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 8))
+        tk.Label(wrapper, text="GARAGEM", font=("Impact", 16, "italic"), bg=BG_COLOR, fg=ACCENT_COLOR).pack(anchor="w", pady=(0, 8))
 
-        canvas = tk.Canvas(wrapper, highlightthickness=0)
+        canvas = tk.Canvas(wrapper, highlightthickness=0, bg=BG_COLOR)
         scroll = ttk.Scrollbar(wrapper, orient="vertical", command=canvas.yview)
-        cards = tk.Frame(canvas)
+        cards = tk.Frame(canvas, bg=BG_COLOR)
 
         cards.bind(
             "<Configure>",
@@ -314,22 +415,22 @@ def collect_user_profile_gui() -> Optional[dict]:
 
         def choose_car(car_name: str):
             car_var.set(car_name)
-            selected_car_label.configure(text=car_name)
+            selected_car_label.configure(text=car_name.upper(), fg=FG_COLOR)
             refresh_skins()
             selector.destroy()
 
         if not cars:
-            tk.Label(cards, text="Nenhum carro encontrado na instalação do Assetto Corsa.").pack(anchor="w")
+            tk.Label(cards, text="Nenhum carro encontrado na instalação do Assetto Corsa.", bg=BG_COLOR, fg=FG_COLOR).pack(anchor="center", pady=20)
             return
 
-        target_size = (240, 135)
-        columns = 3
+        target_size = (360, 202)  # Cards maiores na garagem tela cheia
+        columns = 4
         for index, car_name in enumerate(cars):
             row = index // columns
             column = index % columns
 
-            card = tk.Frame(cards, relief="groove", borderwidth=1, padx=6, pady=6)
-            card.grid(row=row, column=column, padx=6, pady=6, sticky="nsew")
+            card = tk.Frame(cards, relief="flat", borderwidth=0, padx=6, pady=6, bg=INPUT_BG)
+            card.grid(row=row, column=column, padx=8, pady=8, sticky="nsew")
 
             preview_path = find_car_preview_image(assetto_base, car_name, "")
             if preview_path:
@@ -352,7 +453,7 @@ def collect_user_profile_gui() -> Optional[dict]:
             car_images.append(preview_photo)
 
             image_button.pack(fill="both", expand=True)
-            tk.Label(card, text=car_name, anchor="center", wraplength=target_size[0]).pack(fill="x", pady=(6, 0))
+            tk.Label(card, text=car_name.upper(), anchor="center", wraplength=target_size[0], bg=INPUT_BG, fg=FG_COLOR, font=("Segoe UI", 9, "bold")).pack(fill="x", pady=(8, 0))
 
         for col in range(columns):
             cards.grid_columnconfigure(col, weight=1)
@@ -372,11 +473,12 @@ def collect_user_profile_gui() -> Optional[dict]:
 
     skin_combo.bind("<<ComboboxSelected>>", lambda _event: refresh_preview())
 
-    tk.Button(car_select_frame, text="Selecionar por imagem", command=open_car_selector).pack(side="right", padx=(10, 0))
+    btn_style = {"bg": ACCENT_COLOR, "fg": FG_COLOR, "font": ("Impact", 10), "relief": "flat", "activebackground": "#F44336", "activeforeground": FG_COLOR}
+    tk.Button(car_select_frame, text="SELECIONAR", command=open_car_selector, **btn_style, padx=12).pack(side="right", padx=(10, 0))
 
     if USER_PROFILE.get("car"):
         car_var.set(USER_PROFILE["car"])
-        selected_car_label.configure(text=USER_PROFILE["car"])
+        selected_car_label.configure(text=USER_PROFILE["car"].upper(), fg=FG_COLOR)
         refresh_skins()
 
     def on_submit():
@@ -391,22 +493,56 @@ def collect_user_profile_gui() -> Optional[dict]:
             messagebox.showwarning("Campo obrigatório", "Digite o número de telefone.")
             return
 
-        result["name"] = name
-        result["phone"] = phone
-        result["track"] = track_var.get().strip()
-        result["car"] = car_var.get().strip()
-        result["skin"] = skin_var.get().strip()
+        profile_payload = {
+            "name": name,
+            "phone": phone,
+            "track": normalize_track_value(track_var.get().strip()) or "drag2000",
+            "car": car_var.get().strip(),
+            "skin": skin_var.get().strip(),
+        }
+
+        if keep_open:
+            if callable(on_submit_profile):
+                on_submit_profile(profile_payload)
+
+            # Limpa os campos para o próximo piloto sem fechar a interface.
+            name_var.set("")
+            phone_var.set("")
+            track_combo.set(to_track_display("drag2000"))
+            car_var.set("")
+            selected_car_label.configure(text="Nenhum carro selecionado", fg="#AAAAAA")
+            skin_combo["values"] = []
+            skin_var.set("")
+            refresh_preview()
+            name_entry.focus_set()
+            return
+
+        result["name"] = profile_payload["name"]
+        result["phone"] = profile_payload["phone"]
+        result["track"] = profile_payload["track"]
+        result["car"] = profile_payload["car"]
+        result["skin"] = profile_payload["skin"]
         submitted["ok"] = True
         root.destroy()
 
     def on_close():
         root.destroy()
 
-    tk.Button(footer_frame, text="Iniciar", command=on_submit).pack(anchor="e")
+    start_btn_style = btn_style.copy()
+    start_btn_style["font"] = ("Impact", 14)
+    tk.Button(footer_frame, text="▶ INICIAR  ", command=on_submit, **start_btn_style, pady=6, padx=16).pack(anchor="e")
 
     root.protocol("WM_DELETE_WINDOW", on_close)
     name_entry.focus_set()
-    root.mainloop()
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        # Permite encerrar a tela com Ctrl+C sem traceback.
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        return None
 
     if submitted["ok"]:
         return result
@@ -419,11 +555,27 @@ def collect_user_profile():
     if gui_profile:
         return gui_profile
 
+    def has_interactive_stdin() -> bool:
+        stdin = sys.stdin
+        if stdin is None:
+            return False
+        if getattr(stdin, "closed", False):
+            return False
+        try:
+            return bool(stdin.isatty())
+        except Exception:
+            return False
+
+    def read_input(prompt: str, default: str = "") -> str:
+        try:
+            return input(prompt).strip()
+        except (EOFError, OSError, ValueError):
+            # Alguns ambientes do VS Code podem expor stdin fechado/indisponível.
+            return default
+
     # Em execução sem terminal interativo, usa variáveis de ambiente ou padrão.
-    if not os.isatty(0):
-        config_track = os.getenv("CONFIG_TRACK", "drag2000").strip() or "drag2000"
-        if config_track not in {"drag1000", "drag2000", "drag500"}:
-            config_track = "drag2000"
+    if not has_interactive_stdin():
+        config_track = normalize_track_value(os.getenv("CONFIG_TRACK", "drag2000")) or "drag2000"
         return {
             "name": os.getenv("DRIVER_NAME", "Player").strip() or "Player",
             "phone": os.getenv("DRIVER_PHONE", "").strip(),
@@ -432,44 +584,36 @@ def collect_user_profile():
             "skin": os.getenv("DRIVER_SKIN", "").strip(),
         }
 
-    while True:
-        try:
-            name = input("Digite seu nome: ").strip()
-        except EOFError:
-            name = "Player"
+    name = ""
+    for _ in range(3):
+        name = read_input("Digite seu nome: ", default="")
         if name:
             break
         print("Nome não pode ficar vazio.")
+    if not name:
+        name = "Player"
 
-    while True:
-        try:
-            phone = input("Digite seu número de telefone: ").strip()
-        except EOFError:
-            phone = ""
+    phone = ""
+    for _ in range(3):
+        phone = read_input("Digite seu número de telefone: ", default="")
         if phone:
             break
         print("Telefone não pode ficar vazio.")
 
+    track = ""
     while True:
-        try:
-            track = input("Digite CONFIG_TRACK (drag1000, drag2000, drag500) [drag2000]: ").strip()
-        except EOFError:
-            track = ""
+        track = read_input("Digite distância da corrida (500, 1000, 2000) [2000]: ", default="")
 
-        track = track or "drag2000"
-        if track in {"drag1000", "drag2000", "drag500"}:
+        track = track or "2000"
+        normalized_track = normalize_track_value(track)
+        if normalized_track:
+            track = normalized_track
             break
-        print("Valor inválido para CONFIG_TRACK. Use drag1000, drag2000 ou drag500.")
+        print("Valor inválido para distância. Use 500, 1000 ou 2000 metros.")
 
-    try:
-        car = input("Digite o carro (opcional): ").strip()
-    except EOFError:
-        car = ""
+    car = read_input("Digite o carro (opcional): ", default="")
 
-    try:
-        skin = input("Digite a skin/variação (opcional): ").strip()
-    except EOFError:
-        skin = ""
+    skin = read_input("Digite a skin/variação (opcional): ", default="")
 
     return {
         "name": name,
@@ -480,14 +624,9 @@ def collect_user_profile():
     }
 
 
-def ensure_user_profile_initialized():
-    global USER_PROFILE_INITIALIZED
-
-    if USER_PROFILE_INITIALIZED:
-        return
-
-    profile = collect_user_profile()
-    USER_PROFILE.update(profile)
+def apply_profile_updates(profile: dict[str, str]) -> None:
+    with PROFILE_UPDATE_LOCK:
+        USER_PROFILE.update(profile)
 
     updated_race_file = update_race_config_in_race_file(USER_PROFILE)
     if updated_race_file:
@@ -495,10 +634,39 @@ def ensure_user_profile_initialized():
     else:
         print("Não foi possível localizar o arquivo race.ini em Documents\\Assetto Corsa\\cfg.")
 
+
+def start_persistent_profile_gui() -> None:
+    global PROFILE_GUI_STARTED
+
+    if PROFILE_GUI_STARTED:
+        return
+
+    def _run_gui():
+        try:
+            collect_user_profile_gui(keep_open=True, on_submit_profile=apply_profile_updates)
+        except Exception as exc:
+            print(f"Falha ao iniciar interface contínua de cadastro: {exc}")
+
+    gui_thread = threading.Thread(target=_run_gui, name="profile-gui", daemon=True)
+    gui_thread.start()
+    PROFILE_GUI_STARTED = True
+
+
+def ensure_user_profile_initialized():
+    global USER_PROFILE_INITIALIZED
+
+    if USER_PROFILE_INITIALIZED:
+        return
+
+    profile = collect_user_profile()
+    apply_profile_updates(profile)
+
     started_game, game_message = launch_assetto_corsa_game()
     print(game_message)
     if not started_game:
         print("Dica: verifique se o executável existe em C:/Program Files (x86)/Steam/steamapps/common/assettocorsa")
+
+    start_persistent_profile_gui()
 
     USER_PROFILE_INITIALIZED = True
 
@@ -519,7 +687,7 @@ def _upsert_ini_section_values(text: str, section_name: str, values: dict[str, s
             key_regex = re.compile(rf"(?m)^\s*{re.escape(key)}\s*=.*$")
             new_line = f"{key}={value}"
             if key_regex.search(section_text):
-                section_text = key_regex.sub(new_line, section_text, count=1)
+                section_text = key_regex.sub(lambda _m: new_line, section_text, count=1)
             else:
                 section_text = f"{section_text.rstrip()}{line_break}{new_line}{line_break}"
 
@@ -584,10 +752,21 @@ def update_race_config_in_race_file(profile: dict[str, str]) -> Optional[Path]:
         car_0_updates = {
             "DRIVER_NAME": profile.get("name", "").strip() or "Player",
         }
+        car_1_updates = {}
         if profile.get("car", "").strip():
             car_0_updates["MODEL"] = profile["car"].strip()
+            car_1_updates["MODEL"] = profile["car"].strip()
         if profile.get("skin", "").strip():
             car_0_updates["SKIN"] = profile["skin"].strip()
+
+        if car_1_updates.get("MODEL"):
+            assetto_base = find_assetto_base_path()
+            available_bot_skins = list_car_skins(assetto_base, car_1_updates["MODEL"])
+            if available_bot_skins:
+                car_1_updates["SKIN"] = random.choice(available_bot_skins)
+            elif profile.get("skin", "").strip():
+                # Fallback para evitar CAR_1 sem skin quando não houver lista disponível.
+                car_1_updates["SKIN"] = profile["skin"].strip()
 
         remote_updates = {}
         if profile.get("name", "").strip():
@@ -599,6 +778,8 @@ def update_race_config_in_race_file(profile: dict[str, str]) -> Optional[Path]:
         if race_updates:
             updated_text = _upsert_ini_section_values(updated_text, "RACE", race_updates)
         updated_text = _upsert_ini_section_values(updated_text, "CAR_0", car_0_updates)
+        if car_1_updates:
+            updated_text = _upsert_ini_section_values(updated_text, "CAR_1", car_1_updates)
         if remote_updates:
             updated_text = _upsert_ini_section_values(updated_text, "REMOTE", remote_updates)
 
@@ -615,7 +796,8 @@ def get_race_info():
             "pista": "monza",
             "ultima_volta": "01:42:321",
             "melhor_volta": "01:41:999",
-            "tempo_atual": "00:15:200"
+            "tempo_atual": "00:15:200",
+            "session": AC_DRAG,
         }
 
     if not graphics_map or not static_map:
@@ -630,7 +812,8 @@ def get_race_info():
             "pista": static.track.strip(),
             "ultima_volta": graphics.lastTime.strip(),
             "melhor_volta": graphics.bestTime.strip(),
-            "tempo_atual": graphics.currentTime.strip()
+            "tempo_atual": graphics.currentTime.strip(),
+            "session": graphics.session,
         }
     except Exception:
         return None
@@ -649,39 +832,131 @@ def convert_time_to_ms(time_str): ##gogo dada
     except:
         return 0
 
+
+def close_game_with_alt_f4() -> None:
+    try:
+        pyautogui = get_pyautogui()
+        pyautogui.hotkey("alt", "f4")
+        print("Alt+F4 enviado para fechar o jogo.")
+    except Exception as exc:
+        print(f"Erro ao enviar Alt+F4: {exc}")
+
+
+def restart_current_program() -> None:
+    should_exit_current_process = False
+    try:
+        env = os.environ.copy()
+
+        # Evita herdar contexto temporário do PyInstaller onefile (
+        # ex.: _MEIxxxx/base_library.zip) ao reiniciar o próprio executável.
+        if getattr(sys, "frozen", False):
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+            for key in (
+                "_MEIPASS2",
+                "_PYI_APPLICATION_HOME_DIR",
+                "_PYI_PARENT_PROCESS_LEVEL",
+                "_PYI_SPLASH_IPC",
+            ):
+                env.pop(key, None)
+
+        if getattr(sys, "frozen", False):
+            command = [sys.executable]
+        else:
+            command = [sys.executable, *sys.argv]
+
+        subprocess.Popen(command, cwd=os.getcwd(), env=env)
+        print("Aplicação reiniciada.")
+        should_exit_current_process = True
+    except Exception as exc:
+        print(f"Erro ao reiniciar aplicação: {exc}")
+    finally:
+        if should_exit_current_process:
+            os._exit(0)
+
+
+def should_close_and_restart(session_type: int, current_time_ms: int, best_time_ms: int) -> bool:
+    if RACE_MONITOR_STATE["restart_triggered"]:
+        return False
+
+    if session_type != AC_DRAG:
+        RACE_MONITOR_STATE["game_started"] = False
+        return False
+
+    if current_time_ms > 0:
+        RACE_MONITOR_STATE["game_started"] = True
+
+    if not RACE_MONITOR_STATE["game_started"]:
+        return False
+
+    if best_time_ms <= 0:
+        return False
+
+    if current_time_ms > 0 and current_time_ms < best_time_ms:
+        RACE_MONITOR_STATE["restart_triggered"] = True
+        return True
+
+    return False
+
 WS_URL = "ws://181.214.95.75:7080/input"
 
 async def send_to_websocket():
     while True:
-        data = get_race_info()
+        try:
+            data = get_race_info()
 
-        if data:
-            selected_car = USER_PROFILE.get("car") or data["carro"]
-            selected_track = USER_PROFILE.get("track") or data.get("pista") or "Unknown"
-            payload = {
-                "type": "simulator-update",
-                "data": {
-                    "simNum": 1,
-                    "pilot-name": USER_PROFILE["name"],
-                    "pilot-phone": USER_PROFILE["phone"],
-                    "car": selected_car,
-                    "track": selected_track,
-                    "skin": USER_PROFILE.get("skin") or "",
-                    "lapData": {
-                        "lapTime": convert_time_to_ms(data["ultima_volta"]),
-                        "isValid": True
-                    },
-                    "bestLap": convert_time_to_ms(data["melhor_volta"])
+            if data:
+                selected_car = USER_PROFILE.get("car") or data["carro"]
+                selected_track = USER_PROFILE.get("track") or data.get("pista") or "Unknown"
+                try:
+                    session_type = int(data.get("session", -1))
+                except (TypeError, ValueError):
+                    session_type = -1
+                current_time_ms = convert_time_to_ms(data["tempo_atual"])
+                lap_time_ms = convert_time_to_ms(data["ultima_volta"])
+                best_time_ms = convert_time_to_ms(data["melhor_volta"])
+                payload = {
+                    "type": "simulator-update",
+                    "data": {
+                        "simNum": 1,
+                        "pilot-name": USER_PROFILE["name"],
+                        "pilot-phone": USER_PROFILE["phone"],
+                        "car": selected_car,
+                        "track": selected_track,
+                        "skin": USER_PROFILE.get("skin") or "",
+                        "lapData": {
+                            "lapTime": lap_time_ms,
+                            "isValid": True
+                        },
+                        "bestLap": best_time_ms
+                    }
                 }
-            }
 
-            try:
-                async with websockets.connect(WS_URL) as websocket:
-                    print("Enviado:", payload)
-                    await websocket.send(json.dumps(payload))
+                try:
+                    async with websockets.connect(WS_URL) as websocket:
+                        print("Enviado:", payload)
+                        await websocket.send(json.dumps(payload))
 
-            except Exception as e:
-                print("Erro ao enviar websocket:", e)
+                except Exception as e:
+                    print("Erro ao enviar websocket:", e)
+
+                if ENABLE_AUTO_RESTART and should_close_and_restart(session_type, current_time_ms, best_time_ms):
+                    delay_seconds = 10
+                    print(
+                        "Condição atingida (AC_DRAG): currentTime menor que bestTime após iniciar o jogo. "
+                        f"session={session_type} currentTime={current_time_ms}ms bestTime={best_time_ms}ms"
+                    )
+                    print(f"Aguardando {delay_seconds:.1f}s antes de fechar o jogo...")
+                    await asyncio.sleep(delay_seconds)
+                    close_game_with_alt_f4()
+                    if ENABLE_APP_RESTART:
+                        restart_current_program()
+                    else:
+                        print("Reinício completo da aplicação desativado. Mantendo processo atual em execução.")
+                        RACE_MONITOR_STATE["game_started"] = False
+                        RACE_MONITOR_STATE["restart_triggered"] = False
+        except Exception as exc:
+            # Garante que falhas pontuais não derrubem a task em execução contínua.
+            print(f"Erro inesperado no loop websocket: {exc}")
 
         await asyncio.sleep(1)  # envia a cada 1 segundo
 
