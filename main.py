@@ -81,6 +81,11 @@ ENABLE_AUTO_RESTART = os.getenv("ENABLE_AUTO_RESTART", "1").strip().lower() in {
 ENABLE_APP_RESTART = os.getenv("ENABLE_APP_RESTART", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def get_resource_path(relative_path: str) -> Path:
+    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base_dir / relative_path
+
+
 def normalize_track_value(value: str) -> str:
     normalized = (value or "").strip().lower().replace("m", "").replace("metros", "").strip()
     if normalized in {"500", "1000", "2000"}:
@@ -288,12 +293,23 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
     root.option_add("*TCombobox*Listbox*selectForeground", FG_COLOR)
 
     # Logo no topo
-    logo_path = Path("logo.png")
+    logo_path = get_resource_path("logo.png")
     if logo_path.exists():
         try:
             logo_img = Image.open(logo_path)
-            # Redimensiona mantendo aspecto
-            logo_img.thumbnail((400, 150))
+            # Redimensiona mantendo aspecto, inclusive ampliando quando a arte original é menor.
+            max_logo_size = (760, 300)
+            original_width, original_height = logo_img.size
+            if original_width > 0 and original_height > 0:
+                scale = min(
+                    max_logo_size[0] / original_width,
+                    max_logo_size[1] / original_height,
+                )
+                new_size = (
+                    max(1, int(original_width * scale)),
+                    max(1, int(original_height * scale)),
+                )
+                logo_img = logo_img.resize(new_size, Image.Resampling.LANCZOS)
             logo_tk = ImageTk.PhotoImage(logo_img)
             logo_label = tk.Label(root, image=logo_tk, bg=BG_COLOR)
             logo_label.image = logo_tk  # Previne GC
@@ -302,7 +318,7 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
             pass
 
     container = tk.Frame(root, padx=20, pady=10, bg=BG_COLOR)
-    container.pack(fill="both", expand=True)
+    container.pack(fill="both", expand=True, pady=(24, 0))
 
     tk.Label(container, text="PREPARE-SE PARA A CORRIDA", font=("Impact", 18, "italic"), bg=BG_COLOR, fg=ACCENT_COLOR).pack(anchor="n", pady=(0, 20))
 
@@ -350,7 +366,9 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
     footer_frame.pack(fill="x", pady=(10, 0))
 
     image_frame = tk.LabelFrame(container, text="PREVIEW DA MÁQUINA", padx=8, pady=8, bg=BG_COLOR, fg=ACCENT_COLOR, font=("Segoe UI", 9, "bold"))
-    image_frame.pack(fill="both", expand=True, pady=(10, 0))
+    image_frame.pack(fill="x", expand=False, pady=(10, 0))
+    image_frame.configure(height=420)
+    image_frame.pack_propagate(False)
     preview_label = tk.Label(image_frame, text="Selecione carro e skin para visualizar.", bg=BG_COLOR, fg="#666666")
     preview_label.pack(fill="both", expand=True)
 
@@ -368,8 +386,8 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
 
         try:
             image = Image.open(preview_path)
-            # Aumentado para preencher melhor a tela cheia
-            image.thumbnail((1200, 700))
+            # Mantém preview menor para não dominar a primeira tela.
+            image.thumbnail((840, 420))
             image_tk = ImageTk.PhotoImage(image)
             preview_label.configure(image=image_tk, text="", bg=BG_COLOR)
             image_state["preview"] = image_tk
@@ -400,13 +418,40 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
         canvas = tk.Canvas(wrapper, highlightthickness=0, bg=BG_COLOR)
         scroll = ttk.Scrollbar(wrapper, orient="vertical", command=canvas.yview)
         cards = tk.Frame(canvas, bg=BG_COLOR)
+        target_size = (360, 202)  # Cards maiores na garagem tela cheia
+        columns = 4
 
         cards.bind(
             "<Configure>",
             lambda _event: canvas.configure(scrollregion=canvas.bbox("all"))
         )
 
-        canvas.create_window((0, 0), window=cards, anchor="nw")
+        cards_window_id = canvas.create_window((0, 0), window=cards, anchor="n")
+
+        def recenter_cards(_event=None):
+            total_columns = min(columns, len(cars)) if cars else 1
+            card_width = target_size[0] + 16
+            total_width = (total_columns * card_width) + (max(total_columns - 1, 0) * 16)
+            canvas_width = canvas.winfo_width()
+            x = max((canvas_width - total_width) // 2, 0)
+            canvas.coords(cards_window_id, x, 0)
+
+        def on_mouse_wheel(event):
+            if event.delta:
+                canvas.yview_scroll(int(-event.delta / 120), "units")
+            elif event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+
+        canvas.bind("<Configure>", recenter_cards)
+        canvas.bind("<MouseWheel>", on_mouse_wheel)
+        canvas.bind("<Button-4>", on_mouse_wheel)
+        canvas.bind("<Button-5>", on_mouse_wheel)
+        cards.bind("<MouseWheel>", on_mouse_wheel)
+        cards.bind("<Button-4>", on_mouse_wheel)
+        cards.bind("<Button-5>", on_mouse_wheel)
+
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
@@ -423,8 +468,6 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
             tk.Label(cards, text="Nenhum carro encontrado na instalação do Assetto Corsa.", bg=BG_COLOR, fg=FG_COLOR).pack(anchor="center", pady=20)
             return
 
-        target_size = (360, 202)  # Cards maiores na garagem tela cheia
-        columns = 4
         for index, car_name in enumerate(cars):
             row = index // columns
             column = index % columns
@@ -457,6 +500,8 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
 
         for col in range(columns):
             cards.grid_columnconfigure(col, weight=1)
+
+        recenter_cards()
 
         # Mantém as referências das imagens para evitar coleta de lixo do Tkinter.
         selector._car_images = car_images
@@ -505,6 +550,12 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
             if callable(on_submit_profile):
                 on_submit_profile(profile_payload)
 
+            # Ao clicar em INICIAR, tenta abrir o jogo para o próximo piloto.
+            started_game, game_message = launch_assetto_corsa_game()
+            print(game_message)
+            if not started_game:
+                print("Dica: verifique se o executável existe em C:/Program Files (x86)/Steam/steamapps/common/assettocorsa")
+
             # Limpa os campos para o próximo piloto sem fechar a interface.
             name_var.set("")
             phone_var.set("")
@@ -550,78 +601,13 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
     return None
 
 
-def collect_user_profile():
+def collect_user_profile() -> Optional[dict[str, str]]:
     gui_profile = collect_user_profile_gui()
     if gui_profile:
         return gui_profile
 
-    def has_interactive_stdin() -> bool:
-        stdin = sys.stdin
-        if stdin is None:
-            return False
-        if getattr(stdin, "closed", False):
-            return False
-        try:
-            return bool(stdin.isatty())
-        except Exception:
-            return False
-
-    def read_input(prompt: str, default: str = "") -> str:
-        try:
-            return input(prompt).strip()
-        except (EOFError, OSError, ValueError):
-            # Alguns ambientes do VS Code podem expor stdin fechado/indisponível.
-            return default
-
-    # Em execução sem terminal interativo, usa variáveis de ambiente ou padrão.
-    if not has_interactive_stdin():
-        config_track = normalize_track_value(os.getenv("CONFIG_TRACK", "drag2000")) or "drag2000"
-        return {
-            "name": os.getenv("DRIVER_NAME", "Player").strip() or "Player",
-            "phone": os.getenv("DRIVER_PHONE", "").strip(),
-            "track": config_track,
-            "car": os.getenv("DRIVER_CAR", "").strip(),
-            "skin": os.getenv("DRIVER_SKIN", "").strip(),
-        }
-
-    name = ""
-    for _ in range(3):
-        name = read_input("Digite seu nome: ", default="")
-        if name:
-            break
-        print("Nome não pode ficar vazio.")
-    if not name:
-        name = "Player"
-
-    phone = ""
-    for _ in range(3):
-        phone = read_input("Digite seu número de telefone: ", default="")
-        if phone:
-            break
-        print("Telefone não pode ficar vazio.")
-
-    track = ""
-    while True:
-        track = read_input("Digite distância da corrida (500, 1000, 2000) [2000]: ", default="")
-
-        track = track or "2000"
-        normalized_track = normalize_track_value(track)
-        if normalized_track:
-            track = normalized_track
-            break
-        print("Valor inválido para distância. Use 500, 1000 ou 2000 metros.")
-
-    car = read_input("Digite o carro (opcional): ", default="")
-
-    skin = read_input("Digite a skin/variação (opcional): ", default="")
-
-    return {
-        "name": name,
-        "phone": phone,
-        "track": track,
-        "car": car,
-        "skin": skin,
-    }
+    # Cadastro obrigatório para jogar: sem submit, não inicia o jogo.
+    return None
 
 
 def apply_profile_updates(profile: dict[str, str]) -> None:
@@ -659,6 +645,12 @@ def ensure_user_profile_initialized():
         return
 
     profile = collect_user_profile()
+    if not profile:
+        print("Cadastro obrigatório: preencha o formulário e clique em INICIAR para abrir o jogo.")
+        start_persistent_profile_gui()
+        USER_PROFILE_INITIALIZED = True
+        return
+
     apply_profile_updates(profile)
 
     started_game, game_message = launch_assetto_corsa_game()
@@ -951,7 +943,7 @@ async def send_to_websocket():
                     if ENABLE_APP_RESTART:
                         restart_current_program()
                     else:
-                        print("Reinício completo da aplicação desativado. Mantendo processo atual em execução.")
+                        print("Jogo fechado. Aguardando novo preenchimento do formulário para iniciar novamente.")
                         RACE_MONITOR_STATE["game_started"] = False
                         RACE_MONITOR_STATE["restart_triggered"] = False
         except Exception as exc:
