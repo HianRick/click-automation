@@ -60,19 +60,27 @@ USER_PROFILE = {
     "phone": "",
     "track": "drag2000",
     "car": "",
-    "skin": ""
+    "skin": "",
+    "auto_shifter": "1",
 }
 USER_PROFILE_INITIALIZED = False
 PROFILE_GUI_STARTED = False
 PROFILE_UPDATE_LOCK = threading.Lock()
 RACE_INI_PATH = Path.home() / "Documents" / "Assetto Corsa" / "cfg" / "race.ini"
+ASSISTS_INI_PATH = Path.home() / "Documents" / "Assetto Corsa" / "cfg" / "assists.ini"
 AC_DRAG = 6
 TRACK_CONFIG_TO_DISPLAY = {
     "drag500": "500 metros",
     "drag1000": "1000 metros",
     "drag2000": "2000 metros",
+    "livre": "livre",
 }
 TRACK_DISPLAY_TO_CONFIG = {value: key for key, value in TRACK_CONFIG_TO_DISPLAY.items()}
+SHIFTER_MODE_TO_DISPLAY = {
+    "0": "manual",
+    "1": "automatico",
+}
+SHIFTER_DISPLAY_TO_MODE = {value: key for key, value in SHIFTER_MODE_TO_DISPLAY.items()}
 RACE_MONITOR_STATE = {
     "game_started": False,
     "restart_triggered": False,
@@ -90,6 +98,8 @@ def normalize_track_value(value: str) -> str:
     normalized = (value or "").strip().lower().replace("m", "").replace("metros", "").strip()
     if normalized in {"500", "1000", "2000"}:
         return f"drag{normalized}"
+    if normalized in {"livre", "free"}:
+        return "livre"
     if value in TRACK_DISPLAY_TO_CONFIG:
         return TRACK_DISPLAY_TO_CONFIG[value]
     if value in TRACK_CONFIG_TO_DISPLAY:
@@ -99,6 +109,24 @@ def normalize_track_value(value: str) -> str:
 
 def to_track_display(track_config: str) -> str:
     return TRACK_CONFIG_TO_DISPLAY.get(track_config, TRACK_CONFIG_TO_DISPLAY["drag2000"])
+
+
+def normalize_auto_shifter_value(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"0", "manual"}:
+        return "0"
+    if normalized in {"1", "automatico", "automático", "auto", "automatic"}:
+        return "1"
+    if value in SHIFTER_DISPLAY_TO_MODE:
+        return SHIFTER_DISPLAY_TO_MODE[value]
+    if value in SHIFTER_MODE_TO_DISPLAY:
+        return value
+    return "1"
+
+
+def to_shifter_display(shifter_mode: str) -> str:
+    normalized_mode = normalize_auto_shifter_value(shifter_mode)
+    return SHIFTER_MODE_TO_DISPLAY.get(normalized_mode, "automatico")
 
 
 def initialize_shared_memory():
@@ -250,7 +278,6 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
     submitted = {"ok": False}
 
     assetto_base = find_assetto_base_path()
-    track_options = list(TRACK_DISPLAY_TO_CONFIG.keys())
     cars = list_assetto_dirs(assetto_base, "cars")
 
     root = tk.Tk()
@@ -292,13 +319,17 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
     root.option_add("*TCombobox*Listbox*selectBackground", "#3A3A3A")
     root.option_add("*TCombobox*Listbox*selectForeground", FG_COLOR)
 
-    # Logo no topo
-    logo_path = get_resource_path("logo.png")
-    if logo_path.exists():
+    # Logos no topo (logo + logo2 lado a lado, centralizadas)
+    logo_frame = tk.Frame(root, bg=BG_COLOR)
+    logo_images = []
+
+    def _append_logo(image_path: Path, max_logo_size: tuple[int, int]):
+        if not image_path.exists():
+            return
+
         try:
-            logo_img = Image.open(logo_path)
-            # Redimensiona mantendo aspecto, inclusive ampliando quando a arte original é menor.
-            max_logo_size = (760, 300)
+            logo_img = Image.open(image_path)
+            # Redimensiona mantendo aspecto, inclusive ampliando quando a arte original e menor.
             original_width, original_height = logo_img.size
             if original_width > 0 and original_height > 0:
                 scale = min(
@@ -310,12 +341,19 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
                     max(1, int(original_height * scale)),
                 )
                 logo_img = logo_img.resize(new_size, Image.Resampling.LANCZOS)
+
             logo_tk = ImageTk.PhotoImage(logo_img)
-            logo_label = tk.Label(root, image=logo_tk, bg=BG_COLOR)
-            logo_label.image = logo_tk  # Previne GC
-            logo_label.pack(pady=(20, 10))
+            logo_images.append(logo_tk)
+            tk.Label(logo_frame, image=logo_tk, bg=BG_COLOR).pack(side="left", padx=12)
         except Exception:
             pass
+
+    _append_logo(get_resource_path("logo.png"), (520, 220))
+    _append_logo(get_resource_path("logo2.png"), (320, 220))
+
+    if logo_images:
+        logo_frame.pack(pady=(20, 10))
+        logo_frame.logo_images = logo_images  # Previne GC
 
     container = tk.Frame(root, padx=20, pady=10, bg=BG_COLOR)
     container.pack(fill="both", expand=True, pady=(24, 0))
@@ -344,14 +382,78 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
     phone_entry.pack(fill="x", pady=(2, 16), ipady=4)
 
     ui_label(form_center, "DISTÂNCIA DE DRAG").pack(anchor="w")
-    track_var = tk.StringVar()
-    track_combo = ttk.Combobox(form_center, textvariable=track_var, state="readonly", values=track_options, font=("Segoe UI", 11), style="Race.TCombobox")
-    track_combo.pack(fill="x", pady=(2, 12), ipady=4)
-    track_combo.set(to_track_display(USER_PROFILE.get("track", "drag2000")))
+    track_var = tk.StringVar(value=to_track_display(USER_PROFILE.get("track", "drag2000")))
+    track_buttons_frame = tk.Frame(form_center, bg=BG_COLOR)
+    track_buttons_frame.pack(fill="x", pady=(2, 12))
+    track_buttons = {}
+
+    def set_selected_track(track_label: str):
+        track_var.set(track_label)
+        for option, button in track_buttons.items():
+            is_selected = option == track_label
+            button.configure(
+                bg=ACCENT_COLOR if is_selected else INPUT_BG,
+                fg=FG_COLOR,
+                activebackground="#F44336" if is_selected else "#3A3A3A",
+                relief="flat",
+            )
+
+    for option in ("500 metros", "1000 metros", "2000 metros", "livre"):
+        button = tk.Button(
+            track_buttons_frame,
+            text=option,
+            command=lambda value=option: set_selected_track(value),
+            bg=INPUT_BG,
+            fg=FG_COLOR,
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+            padx=10,
+            pady=6,
+            activeforeground=FG_COLOR,
+        )
+        button.pack(side="left", expand=True, fill="x", padx=4)
+        track_buttons[option] = button
+
+    set_selected_track(track_var.get())
+
+    ui_label(form_center, "CÂMBIO").pack(anchor="w")
+    shifter_var = tk.StringVar(value=to_shifter_display(USER_PROFILE.get("auto_shifter", "1")))
+    shifter_buttons_frame = tk.Frame(form_center, bg=BG_COLOR)
+    shifter_buttons_frame.pack(fill="x", pady=(2, 12))
+    shifter_buttons = {}
+
+    def set_selected_shifter(shifter_label: str):
+        shifter_var.set(shifter_label)
+        for option, button in shifter_buttons.items():
+            is_selected = option == shifter_label
+            button.configure(
+                bg=ACCENT_COLOR if is_selected else INPUT_BG,
+                fg=FG_COLOR,
+                activebackground="#F44336" if is_selected else "#3A3A3A",
+                relief="flat",
+            )
+
+    for option in ("manual", "automatico"):
+        button = tk.Button(
+            shifter_buttons_frame,
+            text=option.upper(),
+            command=lambda value=option: set_selected_shifter(value),
+            bg=INPUT_BG,
+            fg=FG_COLOR,
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+            padx=10,
+            pady=6,
+            activeforeground=FG_COLOR,
+        )
+        button.pack(side="left", expand=True, fill="x", padx=4)
+        shifter_buttons[option] = button
+
+    set_selected_shifter(shifter_var.get())
 
     car_var = tk.StringVar()
 
-    ui_label(form_center, "MÁQUINA (CARRO)").pack(anchor="w")
+    ui_label(form_center, "CARRO").pack(anchor="w")
     car_select_frame = tk.Frame(form_center, bg=BG_COLOR)
     car_select_frame.pack(fill="x", pady=(2, 12))
     selected_car_label = tk.Label(car_select_frame, text="Nenhum carro selecionado", anchor="w", font=("Segoe UI", 11), bg=INPUT_BG, fg="#AAAAAA", padx=8, pady=4)
@@ -399,11 +501,11 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
         selector = tk.Toplevel(root)
         selector.title("Garagem - Escolha seu Carro")
         
-        # Tela cheia para o seletor também
+        # Prioriza fullscreen real para manter a mesma experiência da tela principal.
         try:
-            selector.state('zoomed')
-        except tk.TclError:
             selector.attributes('-fullscreen', True)
+        except tk.TclError:
+            selector.state('zoomed')
         selector.bind("<Escape>", lambda e: selector.destroy())
 
         selector.transient(root)
@@ -444,13 +546,14 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
             elif event.num == 5:
                 canvas.yview_scroll(1, "units")
 
+        def bind_scroll_events(widget):
+            widget.bind("<MouseWheel>", on_mouse_wheel)
+            widget.bind("<Button-4>", on_mouse_wheel)
+            widget.bind("<Button-5>", on_mouse_wheel)
+
         canvas.bind("<Configure>", recenter_cards)
-        canvas.bind("<MouseWheel>", on_mouse_wheel)
-        canvas.bind("<Button-4>", on_mouse_wheel)
-        canvas.bind("<Button-5>", on_mouse_wheel)
-        cards.bind("<MouseWheel>", on_mouse_wheel)
-        cards.bind("<Button-4>", on_mouse_wheel)
-        cards.bind("<Button-5>", on_mouse_wheel)
+        bind_scroll_events(canvas)
+        bind_scroll_events(cards)
 
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
@@ -496,7 +599,12 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
             car_images.append(preview_photo)
 
             image_button.pack(fill="both", expand=True)
-            tk.Label(card, text=car_name.upper(), anchor="center", wraplength=target_size[0], bg=INPUT_BG, fg=FG_COLOR, font=("Segoe UI", 9, "bold")).pack(fill="x", pady=(8, 0))
+            car_title = tk.Label(card, text=car_name.upper(), anchor="center", wraplength=target_size[0], bg=INPUT_BG, fg=FG_COLOR, font=("Segoe UI", 9, "bold"))
+            car_title.pack(fill="x", pady=(8, 0))
+
+            bind_scroll_events(card)
+            bind_scroll_events(image_button)
+            bind_scroll_events(car_title)
 
         for col in range(columns):
             cards.grid_columnconfigure(col, weight=1)
@@ -544,6 +652,7 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
             "track": normalize_track_value(track_var.get().strip()) or "drag2000",
             "car": car_var.get().strip(),
             "skin": skin_var.get().strip(),
+            "auto_shifter": normalize_auto_shifter_value(shifter_var.get().strip()),
         }
 
         if keep_open:
@@ -559,7 +668,8 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
             # Limpa os campos para o próximo piloto sem fechar a interface.
             name_var.set("")
             phone_var.set("")
-            track_combo.set(to_track_display("drag2000"))
+            set_selected_track(to_track_display("drag2000"))
+            set_selected_shifter(to_shifter_display("1"))
             car_var.set("")
             selected_car_label.configure(text="Nenhum carro selecionado", fg="#AAAAAA")
             skin_combo["values"] = []
@@ -573,6 +683,7 @@ def collect_user_profile_gui(keep_open: bool = False, on_submit_profile=None) ->
         result["track"] = profile_payload["track"]
         result["car"] = profile_payload["car"]
         result["skin"] = profile_payload["skin"]
+        result["auto_shifter"] = profile_payload["auto_shifter"]
         submitted["ok"] = True
         root.destroy()
 
@@ -615,10 +726,16 @@ def apply_profile_updates(profile: dict[str, str]) -> None:
         USER_PROFILE.update(profile)
 
     updated_race_file = update_race_config_in_race_file(USER_PROFILE)
+    updated_assists_file = update_assists_config_file(USER_PROFILE)
     if updated_race_file:
         print(f"Configuração da corrida atualizada em: {updated_race_file}")
     else:
         print("Não foi possível localizar o arquivo race.ini em Documents\\Assetto Corsa\\cfg.")
+
+    if updated_assists_file:
+        print(f"Configuração de assists atualizada em: {updated_assists_file}")
+    else:
+        print("Não foi possível localizar o arquivo assists em Documents\\Assetto Corsa\\cfg.")
 
 
 def start_persistent_profile_gui() -> None:
@@ -696,6 +813,23 @@ def _upsert_ini_section_values(text: str, section_name: str, values: dict[str, s
     return appended_section
 
 
+def _remove_ini_section_keys(text: str, section_name: str, keys: set[str]) -> str:
+    if not keys:
+        return text
+
+    section_regex = re.compile(rf"(?ms)^\[{re.escape(section_name)}\]\s*$.*?(?=^\[|\Z)")
+    section_match = section_regex.search(text)
+    if not section_match:
+        return text
+
+    section_text = section_match.group(0)
+    for key in keys:
+        key_regex = re.compile(rf"(?m)^\s*{re.escape(key)}\s*=.*(?:\r?\n)?")
+        section_text = key_regex.sub("", section_text)
+
+    return f"{text[:section_match.start()]}{section_text}{text[section_match.end():]}"
+
+
 def update_race_config_in_race_file(profile: dict[str, str]) -> Optional[Path]:
     if RACE_INI_PATH.is_file():
         candidate_paths = [RACE_INI_PATH]
@@ -734,8 +868,31 @@ def update_race_config_in_race_file(profile: dict[str, str]) -> Optional[Path]:
             continue
 
         race_updates = {}
-        if profile.get("track", "").strip():
-            race_updates["CONFIG_TRACK"] = profile["track"].strip()
+        selected_track = profile.get("track", "").strip()
+        drag_track_configs = {"drag500", "drag1000", "drag2000"}
+        session_updates = {}
+        session_keys_to_remove = set()
+        if selected_track == "livre":
+            race_updates["TRACK"] = "vhe_velopark"
+            race_updates["CONFIG_TRACK"] = "standard"
+            session_updates = {
+                "NAME": "Practice",
+                "TYPE": "1",
+                "DURATION_MINUTES": "0",
+                "SPAWN_SET": "PIT",
+            }
+            session_keys_to_remove = {"MATCHES"}
+        elif selected_track:
+            race_updates["TRACK"] = "ks_drag"
+            race_updates["CONFIG_TRACK"] = selected_track if selected_track in drag_track_configs else "drag2000"
+            race_updates["CARS"] = "2"
+            session_updates = {
+                "NAME": "Drag Race",
+                "TYPE": "7",
+                "SPAWN_SET": "START",
+                "MATCHES": "2",
+            }
+            session_keys_to_remove = {"DURATION_MINUTES"}
         if profile.get("car", "").strip():
             race_updates["MODEL"] = profile["car"].strip()
         if profile.get("skin", "").strip():
@@ -769,6 +926,9 @@ def update_race_config_in_race_file(profile: dict[str, str]) -> Optional[Path]:
         updated_text = text
         if race_updates:
             updated_text = _upsert_ini_section_values(updated_text, "RACE", race_updates)
+        if session_updates:
+            updated_text = _upsert_ini_section_values(updated_text, "SESSION_0", session_updates)
+            updated_text = _remove_ini_section_keys(updated_text, "SESSION_0", session_keys_to_remove)
         updated_text = _upsert_ini_section_values(updated_text, "CAR_0", car_0_updates)
         if car_1_updates:
             updated_text = _upsert_ini_section_values(updated_text, "CAR_1", car_1_updates)
@@ -777,6 +937,60 @@ def update_race_config_in_race_file(profile: dict[str, str]) -> Optional[Path]:
 
         race_file.write_text(updated_text, encoding=encoding_used)
         return race_file
+
+    return None
+
+
+def update_assists_config_file(profile: dict[str, str]) -> Optional[Path]:
+    if ASSISTS_INI_PATH.is_file():
+        candidate_paths = [ASSISTS_INI_PATH]
+    else:
+        candidate_paths = []
+
+    base_path = Path.home() / "Documents" / "Assetto Corsa"
+    candidate_dirs = [
+        base_path / "cng",
+        base_path / "cfg",
+        base_path,
+    ]
+    candidate_files = ["assists", "assists.ini"]
+
+    for directory in candidate_dirs:
+        for file_name in candidate_files:
+            assists_file = directory / file_name
+            if assists_file not in candidate_paths:
+                candidate_paths.append(assists_file)
+
+    auto_shifter_value = normalize_auto_shifter_value(profile.get("auto_shifter", "1"))
+
+    for assists_file in candidate_paths:
+        if not assists_file.is_file():
+            continue
+
+        text = None
+        encoding_used = "utf-8"
+        for enc in ("utf-8", "latin-1"):
+            try:
+                text = assists_file.read_text(encoding=enc)
+                encoding_used = enc
+                break
+            except Exception:
+                continue
+
+        if text is None:
+            continue
+
+        line_break = "\r\n" if "\r\n" in text else "\n"
+        auto_shifter_line = f"AUTO_SHIFTER={auto_shifter_value}"
+        auto_shifter_regex = re.compile(r"(?m)^\s*AUTO_SHIFTER\s*=.*$")
+
+        if auto_shifter_regex.search(text):
+            updated_text = auto_shifter_regex.sub(auto_shifter_line, text, count=1)
+        else:
+            updated_text = f"{text.rstrip()}{line_break}{auto_shifter_line}{line_break}" if text.strip() else f"{auto_shifter_line}{line_break}"
+
+        assists_file.write_text(updated_text, encoding=encoding_used)
+        return assists_file
 
     return None
 
@@ -899,6 +1113,8 @@ async def send_to_websocket():
             if data:
                 selected_car = USER_PROFILE.get("car") or data["carro"]
                 selected_track = USER_PROFILE.get("track") or data.get("pista") or "Unknown"
+                selected_shifter_mode = normalize_auto_shifter_value(USER_PROFILE.get("auto_shifter", "1"))
+                selected_shifter_type = to_shifter_display(selected_shifter_mode)
                 try:
                     session_type = int(data.get("session", -1))
                 except (TypeError, ValueError):
@@ -911,10 +1127,12 @@ async def send_to_websocket():
                     "data": {
                         "simNum": 1,
                         "pilot-name": USER_PROFILE["name"],
-                        "pilot-phone": USER_PROFILE["phone"],
+                        "phone": USER_PROFILE["phone"],
                         "car": selected_car,
                         "track": selected_track,
                         "skin": USER_PROFILE.get("skin") or "",
+                        "shifter": selected_shifter_type,
+                        "autoShifter": selected_shifter_mode,
                         "lapData": {
                             "lapTime": lap_time_ms,
                             "isValid": True

@@ -8,6 +8,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('logo.png', '.'),
+        ('logo2.png', '.'),
     ],
     hiddenimports=[
         'uvicorn.logging',
