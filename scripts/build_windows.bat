@@ -1,6 +1,8 @@
 @echo off
 REM Script para gerar executável Windows da API
 
+pushd "%~dp0.."
+
 echo ==============================================
 echo    Gerando executavel da API de Automacao
 echo ==============================================
@@ -53,3 +55,4 @@ if exist "dist\automacao-api.exe" (
 )
 
 pause
+popd

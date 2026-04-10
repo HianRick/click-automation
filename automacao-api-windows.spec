@@ -7,8 +7,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('logo.png', '.'),
-        ('logo2.png', '.'),
+        ('assets/logo.png', 'assets'),
     ],
     hiddenimports=[
         'uvicorn.logging',

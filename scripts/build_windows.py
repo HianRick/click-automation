@@ -6,6 +6,11 @@ Execute este script em um PC Windows com Python instalado
 import subprocess
 import sys
 import os
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
+SPEC_FILE = PROJECT_ROOT / "automacao-api-windows.spec"
 
 def check_python():
     """Verifica se Python está instalado"""
@@ -17,7 +22,7 @@ def check_python():
 def install_dependencies():
     """Instala as dependências necessárias"""
     print("📦 Instalando dependências...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", str(REQUIREMENTS_FILE)], cwd=str(PROJECT_ROOT))
     subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
     print()
 
@@ -26,16 +31,16 @@ def build_exe():
     print("🔨 Gerando executável Windows...")
     
     # Limpa builds anteriores
-    if os.path.exists("build"):
+    if os.path.exists(PROJECT_ROOT / "build"):
         print("🧹 Limpando build anterior...")
         import shutil
-        shutil.rmtree("build", ignore_errors=True)
-    if os.path.exists("dist"):
+        shutil.rmtree(PROJECT_ROOT / "build", ignore_errors=True)
+    if os.path.exists(PROJECT_ROOT / "dist"):
         import shutil
-        shutil.rmtree("dist", ignore_errors=True)
+        shutil.rmtree(PROJECT_ROOT / "dist", ignore_errors=True)
     
     # Gera o executável
-    subprocess.check_call([sys.executable, "-m", "PyInstaller", "automacao-api-windows.spec"])
+    subprocess.check_call([sys.executable, "-m", "PyInstaller", str(SPEC_FILE)], cwd=str(PROJECT_ROOT))
     print()
 
 def main():
@@ -61,7 +66,7 @@ def main():
         print(f"\n❌ Erro: {e}")
         print("\nCertifique-se de que:")
         print("1. Python está instalado")
-        print("2. Você está no diretório do projeto")
+        print("2. A estrutura do projeto está intacta")
         print("3. Tem conexão com a internet para baixar dependências")
         sys.exit(1)
 

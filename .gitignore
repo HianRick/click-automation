@@ -11,5 +11,5 @@ dist/
 build/
 .env
 .venv
-button.png
+assets/button.png
 *.spec.backup

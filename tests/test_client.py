@@ -59,7 +59,7 @@ if __name__ == "__main__":
     print("Cliente de Teste - API de Automação")
     print("=" * 60)
     print("\nCertifique-se de que a API está rodando em http://localhost:5001")
-    print("Execute: ./run.sh em outro terminal\n")
+    print("Execute: ./scripts/run.sh em outro terminal\n")
     
     try:
         # Testa endpoint raiz
@@ -69,7 +69,7 @@ if __name__ == "__main__":
         input("\nPressione Enter para testar /run-auto (Ctrl+C)...")
         test_run_auto()
         
-        input("\nPressione Enter para testar /click (procura button.png)...")
+        input("\nPressione Enter para testar /click (procura assets/button.png)...")
         test_click()
         
         input("\nPressione Enter para testar /kill (ESC + Alt+F4)...")
@@ -85,6 +85,6 @@ if __name__ == "__main__":
         
     except requests.exceptions.ConnectionError:
         print("\n❌ Erro: Não foi possível conectar à API.")
-        print("Certifique-se de que a API está rodando com: ./run.sh")
+        print("Certifique-se de que a API está rodando com: ./scripts/run.sh")
     except KeyboardInterrupt:
         print("\n\nTestes interrompidos pelo usuário.")

@@ -19,33 +19,33 @@ sudo apt install -y python3.13-venv python3-tk python3-dev scrot
 
 2. Crie o ambiente virtual:
 ```bash
-python3 -m venv venv
+python3 -m venv .venv
 ```
 
 3. Ative o ambiente virtual e instale as dependências:
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-4. Para o reconhecimento de imagem no `/click`, você precisará do arquivo `button.png` na raiz do projeto.
+4. Para o reconhecimento de imagem no `/click`, você precisará do arquivo `assets/button.png`.
 
 ## ▶️ Executando a API
 
 ### Opção 1: Usando o script (Linux - recomendado)
 ```bash
-./run.sh
+./scripts/run.sh
 ```
 
 ### Opção 2: Manualmente
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 python3 main.py
 ```
 
 ### Opção 3: Windows executável
 ```cmd
-python build_windows.py
+python scripts/build_windows.py
 ```
 Isso gerará `dist\automacao-api.exe` que pode rodar em qualquer Windows sem Python instalado.
 
@@ -59,7 +59,7 @@ Para criar um executável que roda no Windows sem precisar instalar Python:
 
 **No Windows:**
 1. Instale Python (https://www.python.org/downloads/) - marque "Add to PATH"
-2. Execute: `build_windows.bat` (duplo clique) OU `python build_windows.py`
+2. Execute: `scripts\\build_windows.bat` (duplo clique) OU `python scripts/build_windows.py`
 3. O executável será criado em: `dist\automacao-api.exe`
 4. Copie a pasta `dist\` para qualquer PC Windows e execute!
 
@@ -73,7 +73,7 @@ Todos os endpoints requerem o código de autenticação: `aa22`
 
 ### POST `/click`
 
-Busca um botão na tela (imagem `button.png`), clica nele e move o mouse para x:1000 y:0
+Busca um botão na tela (imagem `assets/button.png`), clica nele e move o mouse para x:1000 y:0
 
 **Request:**
 ```json
@@ -188,7 +188,7 @@ print(response.json())
 ## ⚠️ Notas Importantes
 
 - **FAILSAFE**: Mova o mouse para o canto superior esquerdo da tela para interromper qualquer automação em caso de emergência
-- **button.png**: Certifique-se de ter uma imagem `button.png` do botão que deseja encontrar na tela
+- **assets/button.png**: Certifique-se de ter uma imagem `button.png` em `assets/` do botão que deseja encontrar na tela
 - **Permissões**: No Linux, pode ser necessário instalar dependências adicionais para o pyautogui funcionar corretamente
 
 ### Dependências Linux:
